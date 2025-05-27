@@ -1,34 +1,34 @@
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
+import torch
+import torchvision
 
-num_classes = 2
+from base_model import BaseModel
 
-# load an instance segmentation model pre-trained on COCO
-model2 = torchvision.models.detection.maskrcnn_resnet50_fpn_v2(weights='DEFAULT', progress=True)
+class MaskRCNN2(BaseModel):
+    def __init__(self, hidden_layer=256):
+        super().__init__()
+        self.model = self.get_model(hidden_layer)
 
-# get the number of input features for the classifier
-in_features = model2.roi_heads.box_predictor.cls_score.in_features
-# replace the pre-trained head with a new one
-model2.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+    def get_model(self, hidden_layer):
 
-# now get the number of input features for the mask classifier
-in_features_mask = model2.roi_heads.mask_predictor.conv5_mask.in_channels
-hidden_layer = 256
-# and replace the mask predictor with a new one
-model2.roi_heads.mask_predictor = MaskRCNNPredictor(in_features_mask,
-                                                    hidden_layer,
-                                                    num_classes)
+        num_classes = 2
 
-model2.to(device)
+        # load an instance segmentation model pre-trained on COCO
+        model = torchvision.models.detection.maskrcnn_resnet50_fpn_v2(weights='DEFAULT', progress=True)
 
+        # get the number of input features for the classifier
+        in_features = model.roi_heads.box_predictor.cls_score.in_features
+        # replace the pre-trained head with a new one
+        model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 
-# construct an optimizer
-params = [p for p in model2.parameters() if p.requires_grad]
-optimizer = torch.optim.SGD(params, lr=0.005,
-                            momentum=0.9, weight_decay=0.0005)
+        # now get the number of input features for the mask classifier
+        in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
+        # and replace the mask predictor with a new one
+        model.roi_heads.mask_predictor = MaskRCNNPredictor(in_features_mask,
+                                                            hidden_layer,
+                                                            num_classes)
 
-# and a learning rate scheduler which decreases the learning rate by
-# 10x every 3 epochs
-lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
-                                               step_size=3,
-                                               gamma=0.1)
+        model.to(self.device)
+        return model
+

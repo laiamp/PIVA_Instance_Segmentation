@@ -1,6 +1,5 @@
 from PIL import Image
 
-from engine import train_one_epoch, evaluate
 import utils
 import transforms as T
 

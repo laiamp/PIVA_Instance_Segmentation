@@ -1,5 +1,6 @@
 
 import torchvision
+import torch
 
 model = torchvision.models.detection.maskrcnn_resnet50_fpn_v2(weights='DEFAULT', progress=True)
 
