@@ -1,20 +1,49 @@
-
-import torchvision
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
 import torch
+import torchvision
+from PIL import Image
 
-model = torchvision.models.detection.maskrcnn_resnet50_fpn_v2(weights='DEFAULT', progress=True)
+from models.base_model import BaseModel
 
+class MaskRCNN(BaseModel):
+    def __init__(self, hidden_layer=256, pretrained=True):
+        super().__init__()
+        self.model = self.get_model(hidden_layer, pretrained)
+        self.optimizer = self.get_optimizer()
+        self.lr_scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer,
+                                                    step_size=3,
+                                                    gamma=0.1)
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Using {device}.")
-model.to(device).eval()
+    def __call__(self, images):
+        if isinstance(images[0], Image.Image):
+            transform = torchvision.transforms.ToTensor()
+            images = [transform(image).to(self.device) for image in images]
 
+        return self.model(images)
 
-# add a batch dimension
-imgs = img.unsqueeze(0).to(device) #torch.stack((img,img))
-outs = model(imgs.to(device))
+    
+    def get_model(self, hidden_layer=None, pretrained=True):
 
+        num_classes = 2
 
-print(f"Number of predictions = {len(outs[0]['labels'])}")
-print(f"  labels = {outs[0]['labels'].cpu().numpy()}")
-print(f"  scores = {outs[0]['scores'].detach().cpu().numpy()}")
+        # load an instance segmentation model pre-trained on COCO
+        model = torchvision.models.detection.maskrcnn_resnet50_fpn_v2(weights='DEFAULT', progress=True)
+
+        if not pretrained:
+            # get the number of input features for the classifier
+            in_features = model.roi_heads.box_predictor.cls_score.in_features
+
+            # replace the pre-trained head with a new one
+            model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+
+            # now get the number of input features for the mask classifier
+            in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
+            # and replace the mask predictor with a new one
+            model.roi_heads.mask_predictor = MaskRCNNPredictor(in_features_mask,
+                                                                hidden_layer,
+                                                                num_classes)
+
+        model.to(self.device)
+        return model
+

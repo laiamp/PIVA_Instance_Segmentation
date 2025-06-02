@@ -1,1 +1,3 @@
-model: 'mask_r2' # mask_r, mask_r2
+model: 'mask_r'
+pretrained: True
+hidden_layer: 256

@@ -1,19 +1,30 @@
 import os
 import numpy as np
-
 import torch
 import torch.utils.data
-
 from torchvision import transforms
 from torchvision import utils as tutils
-
-
+from PIL import Image
 import skimage.transform as sktf
 import skimage.io as skio
+import cv2
+import random
+import plotly.express as px
 
-from PIL import Image
+import utils
+import transforms as T
+
+from plots import draw_segmentation_map
 
 
+def get_transform(train):
+    transforms = []
+    transforms.append(T.PILToTensor())
+    transforms.append(T.ConvertImageDtype(torch.float))
+    if train:
+        transforms.append(T.RandomHorizontalFlip(0.5))
+    return T.Compose(transforms)
+  
 
 COCO_NAMES = ['__background__', 'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus',
     'train', 'truck', 'boat', 'traffic light', 'fire hydrant', 'N/A', 'stop sign',
@@ -29,54 +40,7 @@ COCO_NAMES = ['__background__', 'person', 'bicycle', 'car', 'motorcycle', 'airpl
     'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush']
 
 COLORS = np.random.uniform(0, 255, size=(len(COCO_NAMES), 3)).astype(int)
-import cv2
-import random
 
-def draw_segmentation_map(image, target, score_thres=0.8):
-
-    # Convert back to numpy arrays
-    _image = np.copy(image.cpu().detach().numpy().transpose(1,2,0)*255)
-    _masks = np.copy(target['masks'].cpu().detach().numpy().astype(np.float32))
-    _boxes = np.copy(target['boxes'].cpu().detach().numpy().astype(int))
-    _labels = np.copy(target['labels'].cpu().detach().numpy().astype(int))
-    if "scores" in target:
-      _scores = np.copy(target["scores"].cpu().detach().numpy())
-    else:
-      _scores = np.ones(len(_masks),dtype=np.float32)
-
-    alpha = 0.3
-
-    label_names = [COCO_NAMES[i] for i in _labels]
-
-    # Add mask if _scores
-    m = np.zeros_like(_masks[0].squeeze())
-    for i in range(len(_masks)):
-      if _scores[i] > score_thres:
-        m = m + _masks[i]
-
-    # Make sure m is the right shape
-    m = m.squeeze()
-
-    # dark pixel outside masks
-    _image[m<0.5] = 0.3*_image[m<0.5]
-
-    # convert from RGB to OpenCV BGR and back (cv2.rectangle is just too picky)
-    _image = cv2.cvtColor(_image, cv2.COLOR_RGB2BGR)
-    _image = cv2.cvtColor(_image, cv2.COLOR_BGR2RGB)
-
-    for i in range(len(_masks)):
-      if _scores[i] > score_thres:
-        # apply a randon color to each object
-        color = COLORS[random.randrange(0, len(COLORS))].tolist()
-
-        # draw the bounding boxes around the objects
-        cv2.rectangle(_image, _boxes[i][0:2], _boxes[i][2:4], color=color, thickness=2)
-        # put the label text above the objects
-        cv2.putText(_image , label_names[i], (_boxes[i][0], _boxes[i][1]-10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, color,
-                    thickness=1, lineType=cv2.LINE_AA)
-
-    return _image/255
 
 
 class PennFudanDataset(torch.utils.data.Dataset):
@@ -145,6 +109,117 @@ class PennFudanDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.imgs)
 
+    
+class PersonDataset(torch.utils.data.Dataset):
+  # TODO: fix assumptions about labels
+    def __init__(self, root, transforms=None, has_masks=True):
+        self.root = root
+        self.transforms = transforms
+        self.has_masks = has_masks
+        if has_masks:
+          self.imgs = list(sorted(os.listdir(os.path.join(root, "data/images"))))
+          self.masks = list(sorted(os.listdir(os.path.join(root, "data/masks"))))
+        else:
+          self.imgs = list(sorted(os.listdir(os.path.join(root, "test/images"))))
+          self.masks = None
+
+    def __getitem__(self, idx):
+        if self.has_masks:
+          img_path = os.path.join(self.root, "data/images", self.imgs[idx])
+        else:
+          img_path = os.path.join(self.root, "test/images", self.imgs[idx])
+        img = Image.open(img_path).convert("RGB")
+
+        if self.has_masks:
+            mask_path = os.path.join(self.root, "data/masks", self.masks[idx])
+            mask = Image.open(mask_path)
+            mask = np.array(mask)
+            obj_ids = np.array([0, 1]) # només té classes 0 i 1 (background i person)
+            
+            # Visualize the mask using plotly express
+            # fig = px.imshow(mask, color_continuous_scale='gray', title="Mask")
+            # fig.show()
+            obj_ids = obj_ids[1:]
+
+            masks = mask == obj_ids[:, None, None]
+            num_objs = len(obj_ids)
+            boxes = []
+            for i in range(num_objs):
+                pos = np.where(masks[i])
+                xmin = np.min(pos[1])
+                xmax = np.max(pos[1])
+                ymin = np.min(pos[0])
+                ymax = np.max(pos[0])
+                boxes.append([xmin, ymin, xmax, ymax])
+
+            boxes = torch.as_tensor(boxes, dtype=torch.float32)
+            labels = torch.ones((num_objs,), dtype=torch.int64)
+            masks = torch.as_tensor(masks, dtype=torch.uint8)
+            image_id = torch.tensor([idx])
+            area = (boxes[:, 3] - boxes[:, 1]) * (boxes[:, 2] - boxes[:, 0])
+
+            target = {
+                "boxes": boxes,
+                "labels": labels,
+                "masks": masks,
+                "image_id": image_id,
+                "area": area,
+            }
+
+            if self.transforms is not None:
+                img, target = self.transforms(img, target)
+
+            return img, target
+
+        else:
+            if self.transforms is not None:
+                img = self.transforms(img)
+
+            return img
+
+    def __len__(self):
+        return len(self.imgs)
+
+
+def get_dataloaders(dataset_dir, test_only=False):
+    """dataset_dir: 'PennFudanPedor' or 'dataset_person' """
+    # use our dataset and defined transformations
+    if dataset_dir == 'PennFudanPed':
+        # PennFudanPed dataset
+        dataset = PennFudanDataset(dataset_dir, get_transform(train=True))
+        dataset_test = PennFudanDataset(dataset_dir, get_transform(train=False))
+    elif dataset_dir == 'dataset_person':
+        # Person dataset
+        dataset = PersonDataset(dataset_dir, get_transform(train=True))
+        dataset_test = PersonDataset(dataset_dir, get_transform(train=False))
+    else:
+        raise ValueError("Unsupported dataset name. Use 'PennFudanPed' or 'person'.")
+
+
+    # split the dataset in train and test set
+    torch.manual_seed(1)
+    indices = torch.randperm(len(dataset)).tolist()
+    dataset = torch.utils.data.Subset(dataset, indices[:-50])
+
+
+    dataset_test = torch.utils.data.Subset(dataset_test, indices[-50:])
+
+    # define training and validation data loaders
+    data_loader = torch.utils.data.DataLoader(
+        dataset, batch_size=2, shuffle=True, num_workers=2,
+        collate_fn=utils.collate_fn)
+
+    data_loader_test = torch.utils.data.DataLoader(
+        dataset_test, batch_size=1, shuffle=False, num_workers=2,
+        collate_fn=utils.collate_fn)
+
+    if test_only:
+        return data_loader_test
+    
+    return data_loader, data_loader_test
+
+
+
 
 if __name__ == "__main__":
     dataset = PennFudanDataset('PennFudanPed/',get_transform(train=False))
@@ -155,3 +230,12 @@ if __name__ == "__main__":
     print(target["masks"].shape)
     print(target["labels"].shape)
     print(target["boxes"].shape)
+
+    from plotly.subplots import make_subplots
+    import plotly.graph_objects as go
+
+    fig = make_subplots(rows=1, cols=2, subplot_titles=("Input", "Ground Truth"))
+    fig.add_trace(go.Image(z=img.numpy().transpose(1,2,0)*255), 1, 1)
+    fig.add_trace(go.Image(z=draw_segmentation_map(img, target)*255), 1, 2)
+    fig.show()
+    
