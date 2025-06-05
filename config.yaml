@@ -1,3 +1,9 @@
-model: 'mask_r'
-pretrained: True
-hidden_layer: 256
+model: 'mask_r' # 'yolo' or 'mask_r' or 'unet'
+finetune: true
+optimizer: 'sgd' # 'adam' or 'sgd'
+epochs: 5
+hidden_layer: 64
+mask_rcnn_backbone: 'resnet50' # resnet50, resnet101
+yolo_model_name: 'yolo11n-seg.pt'
+load_path: 'mask_r_resnet50_64_epoch_4.pth'
+predict: true
